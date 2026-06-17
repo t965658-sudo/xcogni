@@ -197,23 +197,23 @@ function renderMessageContent(text, container) {
   const html = renderMarkdown(text);
   const div = document.createElement('div');
   div.innerHTML = html;
-  
-  // Render into actual DOM first, then highlight and add copy buttons
-  requestAnimationFrame(() => {
-    div.querySelectorAll('pre code').forEach(block => {
-      try { hljs.highlightElement(block); } catch(e) {}
-      const pre = block.parentElement;
-      if (pre && !pre.querySelector('.copy-code-btn')) {
-        const btn = document.createElement('button');
-        btn.className = 'copy-code-btn';
-        btn.textContent = 'Copy';
-        btn.onclick = () => { navigator.clipboard.writeText(block.textContent); btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 2000); };
-        pre.appendChild(btn);
-      }
-    });
-  });
   div.querySelectorAll('a').forEach(a => { if (!a.target) a.target = '_blank'; if (!a.rel) a.rel = 'noopener'; });
   return div.innerHTML;
+}
+
+// Enhance rendered messages after they're inserted into the real DOM
+function enhanceRenderedMessages() {
+  document.querySelectorAll('.msg-content pre code').forEach(block => {
+    try { hljs.highlightElement(block); } catch(e) {}
+    const pre = block.parentElement;
+    if (pre && !pre.querySelector('.copy-code-btn')) {
+      const btn = document.createElement('button');
+      btn.className = 'copy-code-btn';
+      btn.textContent = 'Copy';
+      btn.onclick = () => { navigator.clipboard.writeText(block.textContent); btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 2000); };
+      pre.appendChild(btn);
+    }
+  });
 }
 
 async function loadConversations() { try { const d = await api('/api/conversations'); if (d) { state.conversations = d; renderSidebar(); } } catch(e) {} }
@@ -458,6 +458,7 @@ function renderMessages() {
     }
     return `<div class="msg-group" data-msg-id="${m.id}"><div class="msg ${m.role}"><div class="msg-avatar">${m.role === 'user' ? 'U' : 'C'}</div><div class="msg-content">${content}</div></div>${actions}</div>`;
   }).join('');
+  enhanceRenderedMessages();
 }
 
 function toggleSidebar() {
@@ -504,13 +505,12 @@ async function submitEditMessage() {
       state.messages[editIndex] = { ...state.messages[editIndex], content };
       // Remove all messages after the edited one
       state.messages = state.messages.slice(0, editIndex + 1);
-      // Add the new assistant response
+      // Add the new assistant response using message_id from server
       state.messages.push({ 
-        id: Date.now(), 
+        id: data.message_id, 
         role: 'assistant', 
         content: data.reply,
-        conversation_id: data.conversation_id,
-        message_id: data.message_id
+        conversation_id: data.conversation_id
       });
       // Update conversation ID if provided
       if (data.conversation_id) {

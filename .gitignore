@@ -2,54 +2,15 @@
 # Dependencies
 node_modules/
 
-# Environment
-.env
-.env.local
-.env.*
-
 # Logs and temp files
 *.log
 *.tmp
 
+# Environment
+.env
+.env.local
+*.env.*
+
 # Editors
 .vscode/
-.idea/
-
-# Build artifacts
-dist/
-build/
-target/
-coverage/
-htmlcov/
-*.out
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg-info/
-.eggs/
-
-# Compiled files
-*.class
-*.o
-*.obj
-*.exe
-*.dll
-*.so
-*.a
-
-# System files
-.DS_Store
-Thumbs.db
-
-# Cache directories
-.mypy_cache/
-.pytest_cache/
-.gradle/
-.julia/
-zig-cache/
 ```
