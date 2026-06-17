@@ -41,7 +41,7 @@ app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false
 }));
-app.use(cors({ origin: process.env.CORS_ORIGIN || '*', credentials: true }));
+app.use(cors({ origin: process.env.CORS_ORIGIN, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 app.use(cookieParser());
 
@@ -156,8 +156,12 @@ app.post('/api/refresh', async (req, res) => {
   }
 });
 
-// Logout — clear refresh cookie
-app.post('/api/logout', (req, res) => {
+// Logout — clear refresh cookie and delete token from DB
+app.post('/api/logout', async (req, res) => {
+  const refreshToken = req.cookies?.cognisys_refresh_token;
+  if (refreshToken) {
+    await deleteRefreshToken(refreshToken);
+  }
   res.clearCookie('cognisys_refresh_token', REFRESH_COOKIE_OPTIONS);
   res.json({ message: 'Logged out' });
 });

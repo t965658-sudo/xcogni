@@ -9,7 +9,10 @@ async function requireAuth(req, res, next) {
       return res.status(401).json({ error: 'Authentication required' });
     }
 
-    const secret = process.env.JWT_SECRET || 'cognisys-dev-secret';
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      return res.status(500).json({ error: 'Server misconfigured: JWT_SECRET not set' });
+    }
     const payload = jwt.verify(parts[1], secret);
     
     // Ensure user exists in database (handles DB resets gracefully)
@@ -39,7 +42,10 @@ function optionalAuth(req, res, next) {
     const auth = req.headers['authorization'] || '';
     const parts = auth.split(' ');
     if (parts[0] === 'Bearer' && parts[1]) {
-      const secret = process.env.JWT_SECRET || 'cognisys-dev-secret';
+      const secret = process.env.JWT_SECRET;
+      if (!secret) {
+        return res.status(500).json({ error: 'Server misconfigured: JWT_SECRET not set' });
+      }
       const payload = jwt.verify(parts[1], secret);
       req.user = { id: payload.sub, email: payload.email, name: payload.name };
     }

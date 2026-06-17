@@ -197,7 +197,8 @@ function renderMessageContent(text, container) {
   const html = renderMarkdown(text);
   const div = document.createElement('div');
   div.innerHTML = html;
-  // Highlight only after DOM is ready - use requestAnimationFrame for race condition fix
+  
+  // Render into actual DOM first, then highlight and add copy buttons
   requestAnimationFrame(() => {
     div.querySelectorAll('pre code').forEach(block => {
       try { hljs.highlightElement(block); } catch(e) {}
@@ -245,8 +246,11 @@ async function sendMessage() {
   // Create AbortController for this request
   currentStreamController = new AbortController();
   
-  state.messages.push({ id: Date.now(), role: 'user', content: message, optimistic: true });
-  state.messages.push({ id: Date.now() + 1, role: 'assistant', content: '', streaming: true });
+  // Keep user message visible - don't use optimistic flag that gets removed
+  const userMsgId = Date.now();
+  const assistantMsgId = Date.now() + 1;
+  state.messages.push({ id: userMsgId, role: 'user', content: message });
+  state.messages.push({ id: assistantMsgId, role: 'assistant', content: '', streaming: true });
   renderMessages();
   scrollToBottom();
   
@@ -270,9 +274,6 @@ async function sendMessage() {
     const decoder = new TextDecoder();
     let buffer = '';
     let finalData = null;
-    
-    // Remove optimistic and streaming placeholders
-    state.messages = state.messages.filter(m => !m.optimistic);
     
     // Update streaming message with partial content
     const updateStreamingMessage = (content) => {
@@ -314,30 +315,47 @@ async function sendMessage() {
       }
     }
     
-    // Finalize message
+    // Finalize message - use real IDs from backend
     state.messages = state.messages.filter(m => !m.streaming);
     if (finalData) {
-      state.messages.push({ id: Date.now() + 2, role: 'user', content: message });
-      state.messages.push({ id: Date.now() + 3, role: 'assistant', content: finalData.reply });
+      // Update the existing user message with real ID if provided
+      const userMsg = state.messages.find(m => m.id === userMsgId);
+      if (userMsg && finalData.message_id) {
+        userMsg.message_id = finalData.user_message_id || userMsg.id;
+      }
+      // Update assistant message with real ID from backend
+      const assistantMsg = state.messages.find(m => m.id === assistantMsgId);
+      if (assistantMsg) {
+        assistantMsg.id = finalData.message_id || assistantMsg.id;
+        assistantMsg.content = finalData.reply;
+        assistantMsg.conversation_id = finalData.conversation_id;
+      }
       state.activeId = finalData.conversation_id;
       loadConversations();
     } else {
-      state.messages.push({ id: Date.now() + 2, role: 'user', content: message });
-      state.messages.push({ id: Date.now() + 3, role: 'assistant', content: accumulatedContent });
+      // No finalData - keep accumulated content for stopped generation
+      const assistantMsg = state.messages.find(m => m.id === assistantMsgId);
+      if (assistantMsg) {
+        assistantMsg.content = accumulatedContent;
+        assistantMsg.streaming = false;
+      }
     }
     renderMessages();
     scrollToBottom();
     
   } catch(e) {
     if (e.name === 'AbortError') {
-      // User stopped generation - keep partial content
-      state.messages = state.messages.filter(m => !m.optimistic && !m.streaming);
-      const partialMsg = state.messages.find(m => m.role === 'assistant' && !m.content);
-      if (partialMsg) {
-        state.messages.push({ id: Date.now() + 3, role: 'assistant', content: 'Generation stopped.' });
+      // User stopped generation - keep partial content, don't duplicate user message
+      const assistantMsg = state.messages.find(m => m.id === assistantMsgId);
+      if (assistantMsg) {
+        assistantMsg.streaming = false;
+        if (!assistantMsg.content) {
+          assistantMsg.content = 'Generation stopped.';
+        }
       }
     } else {
-      state.messages = state.messages.filter(m => !m.optimistic && !m.streaming);
+      // Remove streaming placeholder on error
+      state.messages = state.messages.filter(m => !m.streaming);
       state.messages.push({ id: Date.now() + 4, role: 'assistant', content: 'Sorry, I encountered an error. Please try again.' });
     }
     renderMessages();
@@ -399,8 +417,8 @@ function renderChat() {
       </div>
     </div></div>
     <div class="main"><div class="topbar" id="topbar"></div><div class="messages" id="messages"><div class="messages-inner" id="messages-inner"></div></div>
-    <div class="input-area"><div class="input-wrapper"><textarea id="msg-input" rows="1" placeholder="Message CognisysAI" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}\" oninput="autoResize(this)"></textarea>
-      <button class="send-btn" id="send-btn" onclick="sendMessage()" ${state.sending ? 'disabled' : ''}><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
+    <div class="input-area"><div class="input-wrapper"><textarea id="msg-input" rows="1" placeholder="Message CognisysAI" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault(); editingMessageId ? submitEditMessage() : sendMessage();}" oninput="autoResize(this)"></textarea>
+      <button class="send-btn" id="send-btn" onclick="sendMessage()" ${state.sending || editingMessageId ? 'disabled' : ''}><svg viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button>
       <button class="send-btn" id="stop-btn" onclick="stopGeneration()" style="display:${state.sending ? 'flex' : 'none'};background:#e53e3e"><svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"/></svg></button>
     </div></div></div></div>`;
   renderSidebar(); renderTopbar(); renderMessages();
@@ -432,7 +450,13 @@ function renderMessages() {
   container.innerHTML = state.messages.map(m => {
     if (m.streaming) return `<div class="msg-group"><div class="msg assistant"><div class="msg-avatar">C</div><div class="msg-content"><div class="typing-dots"><span></span><span></span><span></span></div></div></div></div>`;
     const content = renderMessageContent(m.content);
-    return `<div class="msg-group" data-msg-id="${m.id}"><div class="msg ${m.role}"><div class="msg-avatar">${m.role === 'user' ? 'U' : 'C'}</div><div class="msg-content">${content}</div></div>${m.role === 'assistant' ? `<div class="msg-actions"><button class="msg-action-btn" onclick="copyMessage(${m.id})" title="Copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><button class="msg-action-btn" onclick="regenerateMessage(${m.id})" title="Regenerate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button></div>` : ''}</div>`;
+    let actions = '';
+    if (m.role === 'assistant') {
+      actions = `<div class="msg-actions"><button class="msg-action-btn" onclick="copyMessage(${m.id})" title="Copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button><button class="msg-action-btn" onclick="regenerateMessage(${m.id})" title="Regenerate"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button></div>`;
+    } else if (m.role === 'user') {
+      actions = `<div class="msg-actions"><button class="msg-action-btn" onclick="editMessage(${m.id})" title="Edit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button></div>`;
+    }
+    return `<div class="msg-group" data-msg-id="${m.id}"><div class="msg ${m.role}"><div class="msg-avatar">${m.role === 'user' ? 'U' : 'C'}</div><div class="msg-content">${content}</div></div>${actions}</div>`;
   }).join('');
 }
 
@@ -449,6 +473,62 @@ document.addEventListener('click', (e) => { const m = document.getElementById('u
 function quickPrompt(text) { document.getElementById('msg-input').value = text; sendMessage(); }
 async function copyMessage(id) { const m = state.messages.find(m => m.id == id); if (m) { await navigator.clipboard.writeText(m.content); showToast('Copied to clipboard'); } }
 async function regenerateMessage(id) { try { const d = await api('/api/messages/' + id + '/regenerate', { method: 'POST' }); if (d) { state.messages = state.messages.map(m => m.id == id ? { ...m, content: d.reply } : m); renderMessages(); showToast('Response regenerated'); } } catch(e) { showToast('Failed to regenerate'); } }
+
+// Edit user message - load into textarea and submit
+let editingMessageId = null;
+function editMessage(id) {
+  const m = state.messages.find(m => m.id == id);
+  if (!m || m.role !== 'user') return;
+  editingMessageId = id;
+  const textarea = document.getElementById('msg-input');
+  textarea.value = m.content;
+  textarea.focus();
+  autoResize(textarea);
+}
+
+async function submitEditMessage() {
+  if (!editingMessageId) return;
+  const textarea = document.getElementById('msg-input');
+  const content = textarea.value.trim();
+  if (!content) return;
+  
+  try {
+    const data = await api('/api/messages/' + editingMessageId + '/edit', { 
+      method: 'POST', 
+      body: JSON.stringify({ content }) 
+    });
+    if (data) {
+      // Find the index of the edited message
+      const editIndex = state.messages.findIndex(m => m.id == editingMessageId);
+      // Update the edited user message
+      state.messages[editIndex] = { ...state.messages[editIndex], content };
+      // Remove all messages after the edited one
+      state.messages = state.messages.slice(0, editIndex + 1);
+      // Add the new assistant response
+      state.messages.push({ 
+        id: Date.now(), 
+        role: 'assistant', 
+        content: data.reply,
+        conversation_id: data.conversation_id,
+        message_id: data.message_id
+      });
+      // Update conversation ID if provided
+      if (data.conversation_id) {
+        state.activeId = data.conversation_id;
+        loadConversations();
+      }
+      editingMessageId = null;
+      textarea.value = '';
+      autoResize(textarea);
+      renderMessages();
+      scrollToBottom();
+    }
+  } catch(e) {
+    showToast('Failed to edit message');
+    editingMessageId = null;
+  }
+}
+
 function renamePrompt(id) { const c = state.conversations.find(c => c.id == id); if (!c) return; const t = prompt('Rename conversation:', c.title); if (t && t.trim()) renameConversation(id, t.trim()); }
 
 function showToast(message) {
