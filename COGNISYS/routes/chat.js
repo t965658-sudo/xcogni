@@ -3,6 +3,29 @@ const router = express.Router();
 const db = require('../database');
 const { getAIResponse, streamAIResponse } = require('../services/aiRouter');
 
+// Input validation helpers
+const MAX_MESSAGE_LENGTH = 4000;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function validateConversationId(id) {
+  // Allow integer IDs (SQLite) or UUID format
+  if (!id) return false;
+  if (typeof id === 'number' || /^\d+$/.test(id)) return true;
+  return UUID_REGEX.test(id);
+}
+
+function validateMessage(message) {
+  if (!message || typeof message !== 'string') {
+    return { valid: false, error: 'Message required' };
+  }
+  const trimmed = message.trim();
+  if (!trimmed) return { valid: false, error: 'Message empty' };
+  if (trimmed.length > MAX_MESSAGE_LENGTH) {
+    return { valid: false, error: `Message too long (max ${MAX_MESSAGE_LENGTH} characters)` };
+  }
+  return { valid: true, value: trimmed };
+}
+
 // ─── Conversations ──────────────────────────
 
 router.get('/conversations', async (req, res) => {
@@ -28,17 +51,43 @@ router.get('/conversations/:id', async (req, res) => {
 router.post('/conversations', async (req, res) => {
   try {
     const { title } = req.body;
-    const conv = await db.createConversation(req.user.id, title || 'New conversation');
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ error: 'Title required' });
+    }
+    const conv = await db.createConversation(req.user.id, title.trim());
     res.json(conv);
   } catch (e) {
     res.status(500).json({ error: 'Failed to create conversation' });
   }
 });
 
+router.put('/conversations/:id', async (req, res) => {
+  try {
+    const { title } = req.body;
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ error: 'Title required' });
+    }
+    if (!validateConversationId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid conversation ID' });
+    }
+    await db.updateConversationTitle(req.params.id, req.user.id, title.trim());
+    const updated = await db.getConversation(req.params.id, req.user.id);
+    res.json(updated);
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to update conversation' });
+  }
+});
+
 router.patch('/conversations/:id', async (req, res) => {
   try {
     const { title } = req.body;
-    await db.updateConversationTitle(req.params.id, req.user.id, title);
+    if (!validateConversationId(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid conversation ID' });
+    }
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ error: 'Title required' });
+    }
+    await db.updateConversationTitle(req.params.id, req.user.id, title.trim());
     res.json({ message: 'Updated' });
   } catch (e) {
     res.status(500).json({ error: 'Failed to update' });
@@ -194,6 +243,53 @@ router.patch('/messages/:id', async (req, res) => {
     res.json(msg);
   } catch (e) {
     res.status(500).json({ error: 'Failed to update message' });
+  }
+});
+
+// Edit user message and regenerate assistant response
+router.post('/messages/:id/edit', async (req, res) => {
+  try {
+    const { content } = req.body;
+    const validation = validateMessage(content);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+    
+    const msg = await db.get('SELECT * FROM messages WHERE id = ?', [req.params.id]);
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+    
+    // Only allow editing user messages
+    if (msg.role !== 'user') {
+      return res.status(400).json({ error: 'Can only edit user messages' });
+    }
+    
+    const conv = await db.get('SELECT * FROM conversations WHERE id = ?', [msg.conversation_id]);
+    if (!conv) return res.status(404).json({ error: 'Conversation not found' });
+    
+    const messages = await db.getMessages(msg.conversation_id);
+    const msgIndex = messages.findIndex(m => m.id == req.params.id);
+    
+    // Update the user message
+    await db.updateMessage(req.params.id, validation.value);
+    
+    // Delete all messages after this point (including old assistant response)
+    for (let i = msgIndex + 1; i < messages.length; i++) {
+      await db.run('DELETE FROM messages WHERE id = ?', [messages[i].id]);
+    }
+    
+    // Generate new assistant response
+    const history = messages.slice(0, msgIndex).map(m => ({ role: m.role, content: m.content }));
+    const aiResult = await getAIResponse(validation.value, history);
+    const newAssistantMsg = await db.createMessage(msg.conversation_id, 'assistant', aiResult.reply);
+    
+    res.json({ 
+      reply: aiResult.reply, 
+      model: aiResult.model,
+      message_id: newAssistantMsg.id 
+    });
+  } catch (e) {
+    console.error('Edit message error:', e);
+    res.status(500).json({ error: 'Failed to edit message' });
   }
 });
 

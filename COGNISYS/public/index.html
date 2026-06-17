@@ -39,6 +39,9 @@ input,textarea{font-family:inherit}
 .conv-item .conv-delete{opacity:0;position:absolute;right:6px;padding:4px;border-radius:4px;border:none;background:none;color:var(--text-tertiary);cursor:pointer}
 .conv-item:hover .conv-delete{opacity:1}
 .conv-item .conv-delete:hover{background:var(--hover);color:var(--text)}
+.conv-item .conv-rename{opacity:0;position:absolute;right:38px;padding:4px;border-radius:4px;border:none;background:none;color:var(--text-tertiary);cursor:pointer}
+.conv-item:hover .conv-rename{opacity:1}
+.conv-item .conv-rename:hover{background:var(--hover);color:var(--text)}
 .sidebar-user{padding:10px 14px;border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;cursor:pointer;position:relative}
 .sidebar-user:hover{background:var(--hover)}
 .user-avatar{width:30px;height:30px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0}
@@ -136,7 +139,7 @@ input,textarea{font-family:inherit}
 <div id="app" class="app"></div>
 
 <script>
-const state = { user: null, conversations: [], activeId: null, messages: [], sidebarOpen: true, sending: false, theme: localStorage.getItem('cognisys_theme') || 'light', token: null, mobileSidebar: false };
+const state = { user: null, conversations: [], activeId: null, messages: [], sidebarOpen: true, sending: false, theme: localStorage.getItem('cognisys_theme') || 'light', token: null, mobileSidebar: false, searchQuery: '', regeneratingId: null };
 
 async function api(path, options = {}) {
   const token = state.token || localStorage.getItem('cognisys_access_token');
@@ -189,19 +192,24 @@ function renderMarkdown(text) {
   });
 }
 
-function renderMessageContent(text) {
+function renderMessageContent(text, container) {
   if (!text) return '';
   const html = renderMarkdown(text);
   const div = document.createElement('div');
   div.innerHTML = html;
-  div.querySelectorAll('pre code').forEach(block => {
-    try { hljs.highlightElement(block); } catch(e) {}
-    const pre = block.parentElement;
-    const btn = document.createElement('button');
-    btn.className = 'copy-code-btn';
-    btn.textContent = 'Copy';
-    btn.onclick = () => { navigator.clipboard.writeText(block.textContent); btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 2000); };
-    pre.appendChild(btn);
+  // Highlight only after DOM is ready - use requestAnimationFrame for race condition fix
+  requestAnimationFrame(() => {
+    div.querySelectorAll('pre code').forEach(block => {
+      try { hljs.highlightElement(block); } catch(e) {}
+      const pre = block.parentElement;
+      if (pre && !pre.querySelector('.copy-code-btn')) {
+        const btn = document.createElement('button');
+        btn.className = 'copy-code-btn';
+        btn.textContent = 'Copy';
+        btn.onclick = () => { navigator.clipboard.writeText(block.textContent); btn.textContent = 'Copied!'; setTimeout(() => btn.textContent = 'Copy', 2000); };
+        pre.appendChild(btn);
+      }
+    });
   });
   div.querySelectorAll('a').forEach(a => { if (!a.target) a.target = '_blank'; if (!a.rel) a.rel = 'noopener'; });
   return div.innerHTML;
@@ -210,7 +218,17 @@ function renderMessageContent(text) {
 async function loadConversations() { try { const d = await api('/api/conversations'); if (d) { state.conversations = d; renderSidebar(); } } catch(e) {} }
 async function loadConversation(id) { try { const d = await api('/api/conversations/' + id); if (d) { state.activeId = id; state.messages = d.messages || []; renderMessages(); renderSidebar(); renderTopbar(); } } catch(e) {} }
 async function deleteConversation(id) { try { await api('/api/conversations/' + id, { method: 'DELETE' }); if (state.activeId == id) { state.activeId = null; state.messages = []; renderMessages(); } loadConversations(); } catch(e) {} }
-async function renameConversation(id, title) { try { await api('/api/conversations/' + id, { method: 'PATCH', body: JSON.stringify({ title }) }); loadConversations(); } catch(e) {} }
+async function renameConversation(id, title) { try { await api('/api/conversations/' + id, { method: 'PUT', body: JSON.stringify({ title }) }); loadConversations(); } catch(e) {} }
+
+function filterConversations(query) {
+  state.searchQuery = query.toLowerCase();
+  renderSidebar();
+}
+
+function getFilteredConversations() {
+  if (!state.searchQuery) return state.conversations;
+  return state.conversations.filter(c => (c.title || '').toLowerCase().includes(state.searchQuery));
+}
 
 // Global abort controller for current stream
 let currentStreamController = null;
@@ -370,6 +388,7 @@ function renderLogin() {
 function renderChat() {
   document.getElementById('app').innerHTML = `<div class="sidebar" id="sidebar"><div class="sidebar-header"><div class="sidebar-logo"><svg viewBox="0 0 24 24" fill="#5c4cf6"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>CognisysAI</div></div>
     <button class="new-chat-btn" onclick="newConversation()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>New conversation</button>
+    <div style="padding:8px 10px;"><input type="text" placeholder="Search conversations..." value="${state.searchQuery}" oninput="filterConversations(this.value)" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-tertiary);color:var(--text);font-size:13px;outline:none" /></div>
     <div class="conversation-list" id="conv-list"></div>
     <div class="sidebar-user" onclick="toggleUserMenu()">
       <div class="user-avatar">${state.user?.name?.substring(0,2).toUpperCase() || 'GU'}</div>
@@ -391,8 +410,9 @@ function renderChat() {
 
 function renderSidebar() {
   const list = document.getElementById('conv-list'); if (!list) return;
-  if (!state.conversations.length) { list.innerHTML = '<div style="padding:16px 10px;font-size:13px;color:var(--text-tertiary);text-align:center">No conversations yet</div>'; return; }
-  list.innerHTML = state.conversations.map(c => `<div class="conv-item ${c.id == state.activeId ? 'active' : ''}" onclick="loadConversation(${c.id})"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="conv-title" ondblclick="renamePrompt(${c.id})">${c.title || 'New conversation'}</span><button class="conv-delete" onclick="event.stopPropagation();deleteConversation(${c.id})" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>`).join('');
+  const filtered = getFilteredConversations();
+  if (!filtered.length) { list.innerHTML = '<div style="padding:16px 10px;font-size:13px;color:var(--text-tertiary);text-align:center">' + (state.searchQuery ? 'No matching conversations' : 'No conversations yet') + '</div>'; return; }
+  list.innerHTML = filtered.map(c => `<div class="conv-item ${c.id == state.activeId ? 'active' : ''}" onclick="loadConversation(${c.id})"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="conv-title" title="Double-click to rename" ondblclick="renamePrompt(${c.id})">${c.title || 'New conversation'}</span><button class="conv-rename" onclick="event.stopPropagation();renamePrompt(${c.id})" title="Rename"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button><button class="conv-delete" onclick="event.stopPropagation();deleteConversation(${c.id})" title="Delete"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button></div>`).join('');
 }
 
 function renderTopbar() {

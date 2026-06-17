@@ -2,23 +2,20 @@
 # Dependencies
 node_modules/
 
-# Database
-COGNISYS/data/cognisys.db-shm
-COGNISYS/data/cognisys.db-wal
+# Logs and temp files
+*.log
+*.tmp
 
 # Environment
 .env
 .env.local
 *.env.*
 
-# Logs
-*.log
-
-# IDE
+# Editors
 .vscode/
 .idea/
 
-# Python (if applicable)
+# Python
 __pycache__/
 *.pyc
 *.pyo
@@ -26,23 +23,22 @@ __pycache__/
 .Python
 venv/
 .venv/
-env/
-ENV/
+.env
+.env.local
+*.env.*
 
 # Build outputs
 dist/
 build/
-target/
 coverage/
 htmlcov/
 *.out
-*.exe
-*.dll
-*.so
-*.a
-*.obj
 
-# Compression
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Compression files
 *.zip
 *.gz
 *.tar
@@ -61,11 +57,8 @@ htmlcov/
 *.Z
 *.lz
 *.lzo
-
-# System
-.DS_Store
-Thumbs.db
-*.swp
-*.swo
-*.tmp
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```
