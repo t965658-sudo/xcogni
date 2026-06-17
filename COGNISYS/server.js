@@ -28,6 +28,12 @@ if (!process.env.JWT_REFRESH_SECRET) {
   process.exit(1);
 }
 
+// Production CORS validation
+if (process.env.NODE_ENV === 'production' && !process.env.CORS_ORIGIN) {
+  console.error('FATAL: CORS_ORIGIN environment variable is required in production');
+  process.exit(1);
+}
+
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: process.env.NODE_ENV === 'production',
